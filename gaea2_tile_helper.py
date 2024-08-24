@@ -1,11 +1,11 @@
 bl_info = {
-    "name": "Gaea2 Tile Helper",
+    "name": "Tile Generator Add-on",
     "blender": (2, 80, 0),
     "category": "Object",
     "description": "Generate 3D tiles for rendering or STL output with heightmaps, textures, and roughness maps",
-    "author": "Chris Radoux",
+    "author": "Your Name",
     "version": (1, 0, 0),
-    "location": "View3D > Tool Shelf > Gaea2 Tile Helper",
+    "location": "View3D > Tool Shelf > Tile Generator",
     "wiki_url": "",
     "tracker_url": "",
     "support": "COMMUNITY",
@@ -14,6 +14,7 @@ bl_info = {
 import bpy
 import os
 import re
+
 
 class TileGeneratorProperties(bpy.types.PropertyGroup):
     # Common Options
@@ -77,73 +78,28 @@ class TileGeneratorProperties(bpy.types.PropertyGroup):
     )
 
 
-def generate_heightmap_path(context, row, col):
-    props = context.scene.tile_generator_props
-
-    # Extract the base directory and filename of the heightmap
-    base_dir, start_filename = os.path.split(props.start_tile_file)
-    filename, ext = os.path.splitext(start_filename)
-
-    # Extract the coordinates from the start tile file name
-    match = re.search(r'_y(\d+)_x(\d+)', filename)
-    if not match:
-        context.report({'ERROR'}, "Heightmap filename doesn't match the expected pattern '_y%Y%_x%X%'.")
-        return None
-
-    prefix = filename[:match.start()]  # Get the prefix before _y%Y%_x%X%
-    start_y = int(match.group(1))
-    start_x = int(match.group(2))
-
-    # Calculate the new Y and X based on row and column
-    y = start_y + row
-    x = start_x + col
-
-    # Build the new heightmap filename with row and column
-    tile_filename = f"{prefix}_y{y}_x{x}{ext}"
-    heightmap_path = os.path.join(base_dir, tile_filename)
-
-    return heightmap_path
-
-
 def generate_texture_or_roughness_path(context, file_path, row, col):
-    # If no file path is provided, return None
     if not file_path:
         return None
 
-    # Extract the base directory and filename of the texture/roughness file
     base_dir, start_filename = os.path.split(file_path)
     filename, ext = os.path.splitext(start_filename)
 
-    # Extract the coordinates from the start file name
     match = re.search(r'_y(\d+)_x(\d+)', filename)
     if not match:
-        context.report({'ERROR'}, "Texture/Roughness filename doesn't match the expected pattern '_y%Y%_x%X%'.")
         return None
 
-    prefix = filename[:match.start()]  # Get the prefix before _y%Y%_x%X%
+    prefix = filename[:match.start()]
     start_y = int(match.group(1))
     start_x = int(match.group(2))
 
-    # Calculate the new Y and X based on row and column
     y = start_y + row
     x = start_x + col
 
-    # Build the new texture/roughness filename with row and column
     tile_filename = f"{prefix}_y{y}_x{x}{ext}"
     file_path = os.path.join(base_dir, tile_filename)
 
     return file_path
-
-
-def generate_texture_paths(context, row, col):
-    props = context.scene.tile_generator_props
-
-    # Generate paths for heightmap, texture, and roughness
-    heightmap_path = generate_heightmap_path(context, row, col)
-    texture_path = generate_texture_or_roughness_path(context, props.texture_file, row, col)
-    roughness_path = generate_texture_or_roughness_path(context, props.roughness_file, row, col)
-
-    return heightmap_path, texture_path, roughness_path
 
 
 def prepare_plane(subdivisions, tile_thickness):
@@ -164,87 +120,98 @@ def prepare_plane(subdivisions, tile_thickness):
     return plane
 
 
-def apply_displacement(plane, heightmap_img, displacement_strength, subdivision_levels):
+def assign_material(context, plane, row, col, texture_path, roughness_path, invert_roughness_map):
+    material = bpy.data.materials.new(name=f"Material_{row}_{col}")
+    material.use_nodes = True
+    bsdf = material.node_tree.nodes.get("Principled BSDF")
+
+    if not bsdf:
+        bsdf = material.node_tree.nodes.new(type='ShaderNodeBsdfPrincipled')
+
+    if texture_path:
+        try:
+            texture_img = bpy.data.images.load(texture_path)
+            tex_image_node = material.node_tree.nodes.new('ShaderNodeTexImage')
+            tex_image_node.image = texture_img
+            material.node_tree.links.new(bsdf.inputs['Base Color'], tex_image_node.outputs['Color'])
+        except RuntimeError:
+            pass
+
+    if roughness_path:
+        try:
+            roughness_img = bpy.data.images.load(roughness_path)
+            roughness_image_node = material.node_tree.nodes.new('ShaderNodeTexImage')
+            roughness_image_node.image = roughness_img
+
+            if invert_roughness_map:
+                invert_node = material.node_tree.nodes.new('ShaderNodeInvert')
+                material.node_tree.links.new(invert_node.inputs['Color'], roughness_image_node.outputs['Color'])
+                material.node_tree.links.new(bsdf.inputs['Roughness'], invert_node.outputs['Color'])
+            else:
+                material.node_tree.links.new(bsdf.inputs['Roughness'], roughness_image_node.outputs['Color'])
+        except RuntimeError:
+            pass
+
+    if plane.data.materials:
+        plane.data.materials[0] = material
+    else:
+        plane.data.materials.append(material)
+
+
+def generate_heightmap_path(context, row, col):
+    props = context.scene.tile_generator_props
+
+    base_dir, start_filename = os.path.split(props.start_tile_file)
+    filename, ext = os.path.splitext(start_filename)
+
+    match = re.search(r'_y(\d+)_x(\d+)', filename)
+    if not match:
+        return None
+
+    prefix = filename[:match.start()]
+    start_y = int(match.group(1))
+    start_x = int(match.group(2))
+
+    y = start_y + row
+    x = start_x + col
+
+    tile_filename = f"{prefix}_y{y}_x{x}{ext}"
+    heightmap_path = os.path.join(base_dir, tile_filename)
+
+    return heightmap_path
+
+
+def generate_texture_paths(context, row, col):
+    props = context.scene.tile_generator_props
+
+    heightmap_path = generate_heightmap_path(context, row, col)
+    texture_path = generate_texture_or_roughness_path(context, props.texture_file, row, col)
+    roughness_path = generate_texture_or_roughness_path(context, props.roughness_file, row, col)
+
+    return heightmap_path, texture_path, roughness_path
+
+
+def apply_displacement(plane, heightmap_img, displacement_strength, subdivision_levels, apply_modifiers=False):
+    # Add the Subsurf modifier
     mod_subsurf = plane.modifiers.new("Subsurf", 'SUBSURF')
     mod_subsurf.levels = subdivision_levels
     mod_subsurf.render_levels = subdivision_levels
     mod_subsurf.subdivision_type = 'SIMPLE'
 
+    # Add the Displace modifier
     mod_displace = plane.modifiers.new("Displace", 'DISPLACE')
     mod_displace.mid_level = 0
     mod_displace.texture = bpy.data.textures.new(name="HeightmapTexture", type='IMAGE')
     mod_displace.texture.image = heightmap_img
     mod_displace.texture_coords = 'UV'
     mod_displace.strength = displacement_strength
-
-    # Set the texture extension mode to EXTEND
     mod_displace.texture.extension = 'EXTEND'
 
-    # Apply the subdivision and displacement modifiers
-    bpy.ops.object.modifier_apply(modifier=mod_subsurf.name)
-    bpy.ops.object.modifier_apply(modifier=mod_displace.name)
+    # Apply modifiers only if we're in the STL workflow
+    if apply_modifiers:
+        bpy.ops.object.modifier_apply(modifier=mod_subsurf.name)
+        bpy.ops.object.modifier_apply(modifier=mod_displace.name)
 
-
-
-def assign_material(context, plane, row, col, texture_path, roughness_path, invert_roughness_map, report_func):
-    # Create a new material and enable nodes
-    material = bpy.data.materials.new(name=f"Material_{row}_{col}")
-    material.use_nodes = True
-
-    # Get the Principled BSDF shader node
-    bsdf = material.node_tree.nodes.get("Principled BSDF")
-
-    if not bsdf:
-        # If the Principled BSDF node is not found, add it manually
-        bsdf = material.node_tree.nodes.new(type='ShaderNodeBsdfPrincipled')
-        bsdf.location = (0, 0)
-
-    # Try to load the texture and connect it to the Base Color input
-    if texture_path:
-        try:
-            # Attempt to load the image from the provided path
-            texture_img = bpy.data.images.load(texture_path)
-            tex_image_node = material.node_tree.nodes.new('ShaderNodeTexImage')
-            tex_image_node.image = texture_img
-            tex_image_node.location = (-300, 200)
-
-            # Connect texture color to the Base Color input of the Principled BSDF
-            material.node_tree.links.new(bsdf.inputs['Base Color'], tex_image_node.outputs['Color'])
-
-            # Report success in the UI
-            report_func({'INFO'}, f"Successfully loaded texture: {texture_path}")
-        except RuntimeError:
-            report_func({'ERROR'}, f"Failed to load texture: {texture_path}")
-
-    # Try to load the roughness map and connect it to the Roughness input
-    if roughness_path:
-        try:
-            # Attempt to load the roughness image from the provided path
-            roughness_img = bpy.data.images.load(roughness_path)
-            roughness_image_node = material.node_tree.nodes.new('ShaderNodeTexImage')
-            roughness_image_node.image = roughness_img
-            roughness_image_node.location = (-300, 0)
-
-            # Optionally invert the roughness map using a "ShaderNodeInvert"
-            if invert_roughness_map:
-                invert_node = material.node_tree.nodes.new('ShaderNodeInvert')
-                invert_node.location = (-100, 0)
-                material.node_tree.links.new(invert_node.inputs['Color'], roughness_image_node.outputs['Color'])
-                material.node_tree.links.new(bsdf.inputs['Roughness'], invert_node.outputs['Color'])
-            else:
-                # Directly connect the roughness map if no inversion is needed
-                material.node_tree.links.new(bsdf.inputs['Roughness'], roughness_image_node.outputs['Color'])
-
-            # Report success in the UI
-            report_func({'INFO'}, f"Successfully loaded roughness map: {roughness_path}")
-        except RuntimeError:
-            report_func({'ERROR'}, f"Failed to load roughness map: {roughness_path}")
-
-    # Assign the material to the plane
-    if plane.data.materials:
-        plane.data.materials[0] = material
-    else:
-        plane.data.materials.append(material)
 
 class OBJECT_OT_generate_render_tiles(bpy.types.Operator):
     bl_idname = "object.generate_render_tiles"
@@ -265,23 +232,29 @@ class OBJECT_OT_generate_render_tiles(bpy.types.Operator):
 
     def generate_tile_for_render(self, context, row=0, col=0, single_heightmap=False):
         props = context.scene.tile_generator_props
-
         subdivisions = 100  # Fixed subdivisions
-        heightmap_path, texture_path, roughness_path = generate_texture_paths(context, row, col)
-        if not heightmap_path:
-            return {'CANCELLED'}
+
+        if single_heightmap:
+            heightmap_path = props.start_tile_file
+            texture_path = props.texture_file
+            roughness_path = props.roughness_file
+        else:
+            heightmap_path, texture_path, roughness_path = generate_texture_paths(context, row, col)
+            if not heightmap_path:
+                return {'CANCELLED'}
 
         try:
             heightmap_img = bpy.data.images.load(heightmap_path)
         except RuntimeError:
-            self.report({'WARNING'}, f"Failed to load image: {heightmap_path}")
             return {'CANCELLED'}
 
         plane = prepare_plane(subdivisions, tile_thickness=0)
-        apply_displacement(plane, heightmap_img, props.displacement_strength, props.subdivision_levels)
+
+        # Apply displacement without applying the modifiers (keep for render workflow)
+        apply_displacement(plane, heightmap_img, props.displacement_strength, props.subdivision_levels, apply_modifiers=False)
 
         # Assign textures and materials if they exist
-        assign_material(context, plane, row, col, texture_path, roughness_path, props.invert_roughness_map, self.report)
+        assign_material(context, plane, row, col, texture_path, roughness_path, props.invert_roughness_map)
 
         # Translate the tiles to the correct location for rendering
         plane.location.x = col * 10
@@ -313,20 +286,24 @@ class OBJECT_OT_generate_stl_tiles(bpy.types.Operator):
 
     def generate_tile_for_stl(self, context, row=0, col=0, single_heightmap=False):
         props = context.scene.tile_generator_props
-
         subdivisions = 100  # Fixed subdivisions
-        heightmap_path = generate_heightmap_path(context, row, col)
-        if not heightmap_path:
-            return {'CANCELLED'}
+
+        if single_heightmap:
+            heightmap_path = props.start_tile_file
+        else:
+            heightmap_path = generate_heightmap_path(context, row, col)
+            if not heightmap_path:
+                return {'CANCELLED'}
 
         try:
             heightmap_img = bpy.data.images.load(heightmap_path)
         except RuntimeError:
-            self.report({'WARNING'}, f"Failed to load image: {heightmap_path}")
             return {'CANCELLED'}
 
         plane = prepare_plane(subdivisions, tile_thickness=props.tile_thickness)
-        apply_displacement(plane, heightmap_img, props.displacement_strength, props.subdivision_levels)
+
+        # Apply displacement and modifiers in STL workflow (apply modifiers here)
+        apply_displacement(plane, heightmap_img, props.displacement_strength, props.subdivision_levels, apply_modifiers=True)
 
         # Apply transforms to ensure global coordinates are used
         bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
@@ -361,25 +338,21 @@ class OBJECT_OT_generate_stl_tiles(bpy.types.Operator):
         # Remove the plane after export
         bpy.ops.object.delete()
 
-        self.report({'INFO'}, f"STL generated: {export_path}")
         return {'FINISHED'}
 
 
-
-
 class VIEW3D_PT_tile_generator(bpy.types.Panel):
-    bl_label = "Gaea2 Tile Helper"
+    bl_label = "Tile Generator"
     bl_idname = "VIEW3D_PT_tile_generator"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
-    bl_category = 'Gaea2 Tile Helper'
+    bl_category = 'Tile Generator'
 
     def draw(self, context):
         layout = self.layout
         scene = context.scene
         props = scene.tile_generator_props
 
-        # Common Options
         layout.label(text="Common Options")
         layout.prop(props, "num_rows")
         layout.prop(props, "num_cols")
@@ -387,7 +360,6 @@ class VIEW3D_PT_tile_generator(bpy.types.Panel):
         layout.prop(props, "subdivision_levels")
         layout.prop(props, "start_tile_file")
 
-        # STL Workflow
         layout.separator()
         layout.label(text="STL Workflow", icon="MODIFIER")
         box_stl = layout.box()
@@ -395,7 +367,6 @@ class VIEW3D_PT_tile_generator(bpy.types.Panel):
         box_stl.prop(props, "output_dir")
         box_stl.operator("object.generate_stl_tiles", text="Generate STL Tiles")
 
-        # Render Workflow
         layout.separator()
         layout.label(text="Render Workflow", icon="RENDER_STILL")
         box_render = layout.box()
@@ -423,4 +394,3 @@ def unregister():
 
 if __name__ == "__main__":
     register()
-
