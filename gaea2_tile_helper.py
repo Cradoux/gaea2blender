@@ -246,7 +246,53 @@ def assign_material(context, plane, row, col, texture_path, roughness_path, inve
     else:
         plane.data.materials.append(material)
 
-# Part 2: STL Workflow, UI Panel, and Registration
+class OBJECT_OT_generate_render_tiles(bpy.types.Operator):
+    bl_idname = "object.generate_render_tiles"
+    bl_label = "Generate Render Tiles"
+    bl_description = "Generate tiles for rendering with textures and roughness maps"
+
+    def execute(self, context):
+        props = context.scene.tile_generator_props
+        single_heightmap = props.num_rows == 1 and props.num_cols == 1
+
+        for row in range(props.num_rows):
+            for col in range(props.num_cols):
+                result = self.generate_tile_for_render(context, row=row, col=col, single_heightmap=single_heightmap)
+                if result == {'CANCELLED'}:
+                    return result
+
+        return {'FINISHED'}
+
+    def generate_tile_for_render(self, context, row=0, col=0, single_heightmap=False):
+        props = context.scene.tile_generator_props
+
+        subdivisions = 100  # Fixed subdivisions
+        heightmap_path, texture_path, roughness_path = generate_texture_paths(context, row, col)
+        if not heightmap_path:
+            return {'CANCELLED'}
+
+        try:
+            heightmap_img = bpy.data.images.load(heightmap_path)
+        except RuntimeError:
+            self.report({'WARNING'}, f"Failed to load image: {heightmap_path}")
+            return {'CANCELLED'}
+
+        plane = prepare_plane(subdivisions, tile_thickness=0)
+        apply_displacement(plane, heightmap_img, props.displacement_strength, props.subdivision_levels)
+
+        # Assign textures and materials if they exist
+        assign_material(context, plane, row, col, texture_path, roughness_path, props.invert_roughness_map, self.report)
+
+        # Translate the tiles to the correct location for rendering
+        plane.location.x = col * 10
+        plane.location.y = -row * 10
+
+        # Leave the plane in the scene for rendering
+        plane.select_set(True)
+        bpy.context.view_layer.objects.active = plane
+
+        return {'FINISHED'}
+
 
 class OBJECT_OT_generate_stl_tiles(bpy.types.Operator):
     bl_idname = "object.generate_stl_tiles"
