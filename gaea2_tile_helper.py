@@ -16,6 +16,20 @@ import os
 import re
 
 
+# ------------------------------------------------------------
+# Live-update callback (must be defined before PropertyGroup)
+# ------------------------------------------------------------
+
+
+def _trigger_live_update(self, context):
+    if context.scene.tile_generator_props.auto_update:
+        # Use a safely wrapped operator call; ignore failure if operator not found
+        try:
+            bpy.ops.object.tile_generator_refresh(all_tiles=True)
+        except RuntimeError:
+            pass
+
+
 class TileGeneratorProperties(bpy.types.PropertyGroup):
     # Common Options
     num_rows: bpy.props.IntProperty(
@@ -33,13 +47,15 @@ class TileGeneratorProperties(bpy.types.PropertyGroup):
     displacement_strength: bpy.props.FloatProperty(
         name="Displacement Strength",
         default=1.0,
-        description="Strength of the displacement applied to the plane based on the heightmap."
+        description="Strength of the displacement applied to the plane based on the heightmap.",
+        update=_trigger_live_update
     )
     subdivision_levels: bpy.props.IntProperty(
         name="Subdivision Levels",
         default=3,
         min=0,
-        description="Number of subdivision levels for the plane's geometry."
+        description="Number of subdivision levels for the plane's geometry.",
+        update=_trigger_live_update
     )
     start_tile_file: bpy.props.StringProperty(
         name="Heightmap File",
@@ -64,17 +80,25 @@ class TileGeneratorProperties(bpy.types.PropertyGroup):
     texture_file: bpy.props.StringProperty(
         name="Texture File",
         subtype='FILE_PATH',
-        description="Pick the first file in the set of texture tiles to match the heightmap tiles."
+        description="Pick the first file in the set of texture tiles to match the heightmap tiles.",
+        update=_trigger_live_update
     )
     roughness_file: bpy.props.StringProperty(
         name="Roughness File",
         subtype='FILE_PATH',
-        description="Pick the first file in the set of roughness tiles to match the heightmap tiles."
+        description="Pick the first file in the set of roughness tiles to match the heightmap tiles.",
+        update=_trigger_live_update
     )
     normal_file: bpy.props.StringProperty(
         name="Normal Map File",
         subtype='FILE_PATH',
-        description="Pick the first file in the set of normal map tiles to match the heightmap tiles."
+        description="Pick the first file in the set of normal map tiles to match the heightmap tiles.",
+        update=_trigger_live_update
+    )
+    auto_update: bpy.props.BoolProperty(
+        name="Auto-update Tiles",
+        default=True,
+        description="Automatically refresh tiles when settings change."
     )
     invert_roughness_map: bpy.props.BoolProperty(
         name="Invert Roughness Map",
@@ -245,6 +269,12 @@ class OBJECT_OT_generate_render_tiles(bpy.types.Operator):
         props = context.scene.tile_generator_props
         single_heightmap = props.num_rows == 1 and props.num_cols == 1
 
+        # Ensure we have a clean collection
+        tiles_coll = ensure_tile_collection(context)
+        # Remove existing objects to avoid duplicates
+        for obj in list(tiles_coll.objects):
+            bpy.data.objects.remove(obj, do_unlink=True)
+
         for row in range(props.num_rows):
             for col in range(props.num_cols):
                 result = self.generate_tile_for_render(context, row=row, col=col, single_heightmap=single_heightmap)
@@ -273,6 +303,13 @@ class OBJECT_OT_generate_render_tiles(bpy.types.Operator):
             return {'CANCELLED'}
 
         plane = prepare_plane(subdivisions, tile_thickness=0)
+
+        # Tag plane row/col and move to tiles collection
+        plane["tile_rc"] = (row, col)
+        tiles_coll = ensure_tile_collection(context)
+        tiles_coll.objects.link(plane)
+        # Unlink from default collection to keep hierarchy clean
+        context.scene.collection.objects.unlink(plane)
 
         # Apply displacement without applying the modifiers (keep for render workflow)
         apply_displacement(plane, heightmap_img, props.displacement_strength, props.subdivision_levels, apply_modifiers=False)
@@ -398,13 +435,16 @@ class VIEW3D_PT_tile_generator(bpy.types.Panel):
         box_render.prop(props, "roughness_file")
         box_render.prop(props, "normal_file")
         box_render.prop(props, "invert_roughness_map")
+        box_render.prop(props, "auto_update")
         box_render.operator("object.generate_render_tiles", text="Generate Render Tiles")
+        box_render.operator("object.tile_generator_refresh", text="Refresh Tiles")
 
 
 def register():
     bpy.utils.register_class(TileGeneratorProperties)
     bpy.utils.register_class(OBJECT_OT_generate_stl_tiles)
     bpy.utils.register_class(OBJECT_OT_generate_render_tiles)
+    bpy.utils.register_class(OBJECT_OT_tile_generator_refresh)
     bpy.utils.register_class(VIEW3D_PT_tile_generator)
     bpy.types.Scene.tile_generator_props = bpy.props.PointerProperty(type=TileGeneratorProperties)
 
@@ -413,9 +453,108 @@ def unregister():
     bpy.utils.unregister_class(TileGeneratorProperties)
     bpy.utils.unregister_class(OBJECT_OT_generate_stl_tiles)
     bpy.utils.unregister_class(OBJECT_OT_generate_render_tiles)
+    bpy.utils.unregister_class(OBJECT_OT_tile_generator_refresh)
     bpy.utils.unregister_class(VIEW3D_PT_tile_generator)
     del bpy.types.Scene.tile_generator_props
 
 
 if __name__ == "__main__":
     register()
+
+# ----------------------------- Live-update helpers -----------------------------
+
+# Name of collection that stores generated tiles
+TILE_COLLECTION_NAME = "TileGeneratorTiles"
+
+
+def get_tile_collection():
+    """Return the TileGeneratorTiles collection if it exists, otherwise None."""
+    return bpy.data.collections.get(TILE_COLLECTION_NAME)
+
+
+def ensure_tile_collection(context):
+    """Get or create the dedicated collection that houses generated tiles."""
+    coll = get_tile_collection()
+    if coll is None:
+        coll = bpy.data.collections.new(TILE_COLLECTION_NAME)
+        # Link to the master collection of current scene
+        context.scene.collection.children.link(coll)
+    return coll
+
+
+# Callback that triggers a refresh when auto-update is enabled
+def _trigger_live_update(self, context):
+    if context.scene.tile_generator_props.auto_update:
+        # Use a safely wrapped operator call; ignore failure if operator not found
+        try:
+            bpy.ops.object.tile_generator_refresh(all_tiles=True)
+        except RuntimeError:
+            pass
+
+# ----------------------------- Refresh operator -----------------------------
+
+
+class OBJECT_OT_tile_generator_refresh(bpy.types.Operator):
+    """Refresh existing tiles with current Tile Generator settings"""
+
+    bl_idname = "object.tile_generator_refresh"
+    bl_label = "Refresh Tiles"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    all_tiles: bpy.props.BoolProperty(default=True, options={'HIDDEN'})
+
+    def execute(self, context):
+        coll = get_tile_collection()
+        if coll is None or len(coll.objects) == 0:
+            self.report({'WARNING'}, "No generated tiles found. Generate tiles first.")
+            return {'CANCELLED'}
+
+        props = context.scene.tile_generator_props
+
+        # Simple progress bar
+        wm = context.window_manager
+        wm.progress_begin(0, len(coll.objects))
+
+        for idx, plane in enumerate(coll.objects):
+            wm.progress_update(idx)
+
+            if "tile_rc" not in plane:
+                continue  # skip any foreign objects
+
+            row, col = plane["tile_rc"]
+
+            # Retrieve paths again
+            single_heightmap = props.num_rows == 1 and props.num_cols == 1
+            if single_heightmap:
+                heightmap_path = props.start_tile_file
+                texture_path = props.texture_file
+                roughness_path = props.roughness_file
+                normal_path = props.normal_file
+            else:
+                heightmap_path, texture_path, roughness_path, normal_path = generate_texture_paths(context, row, col)
+
+            try:
+                heightmap_img = bpy.data.images.load(heightmap_path)
+            except Exception:
+                self.report({'ERROR'}, f"Failed to load heightmap {heightmap_path}")
+                continue
+
+            # Update modifiers
+            subsurf = plane.modifiers.get("Subsurf")
+            if subsurf:
+                subsurf.levels = props.subdivision_levels
+                subsurf.render_levels = props.subdivision_levels
+
+            displace = plane.modifiers.get("Displace")
+            if displace:
+                displace.strength = props.displacement_strength
+                if displace.texture is None:
+                    displace.texture = bpy.data.textures.new(name="HeightmapTexture", type='IMAGE')
+                displace.texture.image = heightmap_img
+
+            # Reassign material
+            assign_material(context, plane, row, col, texture_path, roughness_path, normal_path, props.invert_roughness_map)
+
+        wm.progress_end()
+        self.report({'INFO'}, "Tiles updated")
+        return {'FINISHED'}
