@@ -103,7 +103,8 @@ class TileGeneratorProperties(bpy.types.PropertyGroup):
     invert_roughness_map: bpy.props.BoolProperty(
         name="Invert Roughness Map",
         default=False,
-        description="Invert the roughness map for each tile."
+        description="Invert the roughness map for each tile.",
+        update=_trigger_live_update
     )
 
 
@@ -159,7 +160,9 @@ def assign_material(context, plane, row, col, texture_path, roughness_path, norm
 
     if texture_path:
         try:
-            texture_img = bpy.data.images.load(texture_path)
+            texture_img = bpy.data.images.get(texture_path)
+            if texture_img is None:
+                texture_img = bpy.data.images.load(texture_path)
             tex_image_node = material.node_tree.nodes.new('ShaderNodeTexImage')
             tex_image_node.image = texture_img
             material.node_tree.links.new(bsdf.inputs['Base Color'], tex_image_node.outputs['Color'])
@@ -168,7 +171,9 @@ def assign_material(context, plane, row, col, texture_path, roughness_path, norm
 
     if roughness_path:
         try:
-            roughness_img = bpy.data.images.load(roughness_path)
+            roughness_img = bpy.data.images.get(roughness_path)
+            if roughness_img is None:
+                roughness_img = bpy.data.images.load(roughness_path)
             roughness_image_node = material.node_tree.nodes.new('ShaderNodeTexImage')
             roughness_image_node.image = roughness_img
 
@@ -184,7 +189,9 @@ def assign_material(context, plane, row, col, texture_path, roughness_path, norm
     # Normal map handling
     if normal_path:
         try:
-            normal_img = bpy.data.images.load(normal_path)
+            normal_img = bpy.data.images.get(normal_path)
+            if normal_img is None:
+                normal_img = bpy.data.images.load(normal_path)
             normal_image_node = material.node_tree.nodes.new('ShaderNodeTexImage')
             normal_image_node.image = normal_img
             # Set color space for normal map to Non-Color to avoid sRGB interpretation
@@ -297,10 +304,18 @@ class OBJECT_OT_generate_render_tiles(bpy.types.Operator):
             if not heightmap_path:
                 return {'CANCELLED'}
 
-        try:
-            heightmap_img = bpy.data.images.load(heightmap_path)
-        except RuntimeError:
-            return {'CANCELLED'}
+        # Only load if path changed or not already loaded
+        heightmap_img = None
+        if displace := plane.modifiers.get("Displace"):
+            current_img = displace.texture.image if displace.texture else None
+            if current_img and current_img.filepath == heightmap_path:
+                heightmap_img = current_img
+        if heightmap_img is None:
+            try:
+                heightmap_img = bpy.data.images.get(heightmap_path) or bpy.data.images.load(heightmap_path)
+            except Exception:
+                self.report({'ERROR'}, f"Failed to load heightmap {heightmap_path}")
+                return {'CANCELLED'}
 
         plane = prepare_plane(subdivisions, tile_thickness=0)
 
@@ -308,8 +323,9 @@ class OBJECT_OT_generate_render_tiles(bpy.types.Operator):
         plane["tile_rc"] = (row, col)
         tiles_coll = ensure_tile_collection(context)
         tiles_coll.objects.link(plane)
-        # Unlink from default collection to keep hierarchy clean
-        context.scene.collection.objects.unlink(plane)
+        # Unlink from the master collection if the plane is still linked there
+        if plane in context.scene.collection.objects:
+            context.scene.collection.objects.unlink(plane)
 
         # Apply displacement without applying the modifiers (keep for render workflow)
         apply_displacement(plane, heightmap_img, props.displacement_strength, props.subdivision_levels, apply_modifiers=False)
@@ -482,15 +498,6 @@ def ensure_tile_collection(context):
     return coll
 
 
-# Callback that triggers a refresh when auto-update is enabled
-def _trigger_live_update(self, context):
-    if context.scene.tile_generator_props.auto_update:
-        # Use a safely wrapped operator call; ignore failure if operator not found
-        try:
-            bpy.ops.object.tile_generator_refresh(all_tiles=True)
-        except RuntimeError:
-            pass
-
 # ----------------------------- Refresh operator -----------------------------
 
 
@@ -533,11 +540,18 @@ class OBJECT_OT_tile_generator_refresh(bpy.types.Operator):
             else:
                 heightmap_path, texture_path, roughness_path, normal_path = generate_texture_paths(context, row, col)
 
-            try:
-                heightmap_img = bpy.data.images.load(heightmap_path)
-            except Exception:
-                self.report({'ERROR'}, f"Failed to load heightmap {heightmap_path}")
-                continue
+            # Only load if path changed or not already loaded
+            heightmap_img = None
+            if displace := plane.modifiers.get("Displace"):
+                current_img = displace.texture.image if displace.texture else None
+                if current_img and current_img.filepath == heightmap_path:
+                    heightmap_img = current_img
+            if heightmap_img is None:
+                try:
+                    heightmap_img = bpy.data.images.get(heightmap_path) or bpy.data.images.load(heightmap_path)
+                except Exception:
+                    self.report({'ERROR'}, f"Failed to load heightmap {heightmap_path}")
+                    continue
 
             # Update modifiers
             subsurf = plane.modifiers.get("Subsurf")
