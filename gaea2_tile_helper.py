@@ -317,12 +317,11 @@ class OBJECT_OT_generate_render_tiles(bpy.types.Operator):
         plane["tile_rc"] = (row, col)
         tiles_coll = ensure_tile_collection(context)
         tiles_coll.objects.link(plane)
-        # Unlink from the master collection if the plane is still linked there
+        # Unlink from the master collection to keep hierarchy clean
         try:
-            if plane in context.scene.collection.objects:
-                context.scene.collection.objects.unlink(plane)
+            context.scene.collection.objects.unlink(plane)
         except RuntimeError:
-            pass  # Plane may already be unlinked
+            pass  # Plane not linked
 
         # Apply displacement without applying the modifiers (keep for render workflow)
         apply_displacement(plane, heightmap_img, props.displacement_strength, props.subdivision_levels, apply_modifiers=False)
