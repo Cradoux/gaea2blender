@@ -53,6 +53,15 @@ class MainPanel(bpy.types.Panel):
             row.prop(props, "sphere_resolution_rings", text="Rings")
             box.prop(props, "globe_radius")
 
+            # Texture mapping controls
+            box_uv = layout.box()
+            box_uv.label(text="Texture Mapping:")
+            box_uv.prop(props, "maintain_aspect_ratio")
+            row_pad = box_uv.row(align=True)
+            row_pad.prop(props, "polar_padding_top", text="Top Pad")
+            row_pad.prop(props, "polar_padding_bottom", text="Bottom Pad")
+            box_uv.prop(props, "texture_extension_mode")
+
             box = layout.box()
             box.label(text="Atmosphere:")
             box.prop(props, "generate_atmosphere")

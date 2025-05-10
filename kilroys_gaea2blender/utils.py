@@ -153,48 +153,64 @@ def _load_image_cached(path: str):
 
 
 def assign_material(context, obj, row: int, col: int, texture_path: str, roughness_path: str, normal_path: str, invert_roughness_map: bool):
-    mat = bpy.data.materials.new(name=f"Material_{row}_{col}")
+    """Create or replace a material for obj using provided textures and addon mapping props."""
+    props = context.scene.kilroy_props
+
+    mat_name = f"Material_{obj.name}_{row}_{col}"
+    mat = bpy.data.materials.get(mat_name) or bpy.data.materials.new(mat_name)
     mat.use_nodes = True
     nt = mat.node_tree
     nodes = nt.nodes
     links = nt.links
-    # clear default nodes
+
+    # Clear existing nodes
     for n in list(nodes):
         nodes.remove(n)
-    output = nodes.new('ShaderNodeOutputMaterial')
+
+    out_node = nodes.new('ShaderNodeOutputMaterial')
     bsdf = nodes.new('ShaderNodeBsdfPrincipled')
-    links.new(bsdf.outputs['BSDF'], output.inputs['Surface'])
+    links.new(bsdf.outputs['BSDF'], out_node.inputs['Surface'])
 
-    if texture_path:
-        img = _load_image_cached(texture_path)
-        if img:
-            tex = nodes.new('ShaderNodeTexImage')
-            tex.image = img
-            links.new(tex.outputs['Color'], bsdf.inputs['Base Color'])
+    primary_img = _load_image_cached(texture_path) if texture_path else None
+    uv_socket = _setup_texture_mapping_nodes(nt, primary_img, props)
 
+    def _create_tex_node(image, colours=True):
+        tex = nodes.new('ShaderNodeTexImage')
+        tex.image = image
+        tex.interpolation = 'Linear'
+        tex.extension = props.texture_extension_mode
+        if hasattr(image, 'colorspace_settings'):
+            image.colorspace_settings.name = 'sRGB' if colours else 'Non-Color'
+        links.new(uv_socket, tex.inputs['Vector'])
+        return tex
+
+    # Base Color
+    if primary_img:
+        tex_node = _create_tex_node(primary_img, colours=True)
+        links.new(tex_node.outputs['Color'], bsdf.inputs['Base Color'])
+
+    # Roughness
     if roughness_path:
         img_r = _load_image_cached(roughness_path)
         if img_r:
-            tex_r = nodes.new('ShaderNodeTexImage')
-            tex_r.image = img_r
+            tex_r = _create_tex_node(img_r, colours=False)
+            rough_socket = tex_r.outputs['Color']
             if invert_roughness_map:
                 inv = nodes.new('ShaderNodeInvert')
                 links.new(tex_r.outputs['Color'], inv.inputs['Color'])
-                links.new(inv.outputs['Color'], bsdf.inputs['Roughness'])
-            else:
-                links.new(tex_r.outputs['Color'], bsdf.inputs['Roughness'])
+                rough_socket = inv.outputs['Color']
+            links.new(rough_socket, bsdf.inputs['Roughness'])
 
+    # Normal map
     if normal_path:
         img_n = _load_image_cached(normal_path)
         if img_n:
-            tex_n = nodes.new('ShaderNodeTexImage')
-            tex_n.image = img_n
-            if hasattr(tex_n.image, 'colorspace_settings'):
-                tex_n.image.colorspace_settings.name = 'Non-Color'
-            normal = nodes.new('ShaderNodeNormalMap')
-            links.new(tex_n.outputs['Color'], normal.inputs['Color'])
-            links.new(normal.outputs['Normal'], bsdf.inputs['Normal'])
+            tex_n = _create_tex_node(img_n, colours=False)
+            normal_map = nodes.new('ShaderNodeNormalMap')
+            links.new(tex_n.outputs['Color'], normal_map.inputs['Color'])
+            links.new(normal_map.outputs['Normal'], bsdf.inputs['Normal'])
 
+    # Assign to object
     if obj.data.materials:
         obj.data.materials[0] = mat
     else:
@@ -214,4 +230,41 @@ def apply_displacement(obj, heightmap_img, strength: float, subdivision_levels: 
     disp.strength = strength
     if apply_modifiers:
         bpy.ops.object.modifier_apply(modifier=sub.name)
-        bpy.ops.object.modifier_apply(modifier=disp.name) 
+        bpy.ops.object.modifier_apply(modifier=disp.name)
+
+# ---------------- UV mapping helper ----------------
+
+
+def _setup_texture_mapping_nodes(node_tree, reference_image, props):
+    """Create Texture Coordinate + Mapping nodes and configure them based on addon properties.
+
+    Returns the Vector output socket of the Mapping node for connection to Image Texture nodes.
+    """
+    nodes = node_tree.nodes
+    links = node_tree.links
+
+    tex_coord = nodes.new(type='ShaderNodeTexCoord')
+    mapping = nodes.new(type='ShaderNodeMapping')
+    mapping.vector_type = 'TEXTURE'
+
+    # Compute vertical coverage considering polar padding
+    v_coverage = 1.0 - props.polar_padding_top - props.polar_padding_bottom
+    v_coverage = max(v_coverage, 0.02)
+    scale_y = 1.0 / v_coverage
+    loc_y = -props.polar_padding_bottom * scale_y
+
+    # Horizontal scaling to maintain aspect ratio if requested
+    scale_x = 1.0
+    loc_x = 0.0
+    if props.maintain_aspect_ratio and reference_image and hasattr(reference_image, 'size') and reference_image.size[1] > 0:
+        img_aspect = reference_image.size[0] / reference_image.size[1]
+        target_aspect = 2.0  # equirectangular sphere UV aspect
+        scale_x = target_aspect / img_aspect
+        loc_x = (1.0 - scale_x) / 2.0
+
+    mapping.inputs['Scale'].default_value = (scale_x, scale_y, 1.0)
+    mapping.inputs['Location'].default_value = (loc_x, loc_y, 0.0)
+
+    links.new(tex_coord.outputs['UV'], mapping.inputs['Vector'])
+
+    return mapping.outputs['Vector'] 

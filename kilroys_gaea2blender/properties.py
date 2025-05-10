@@ -42,6 +42,39 @@ class KilroyProperties(bpy.types.PropertyGroup):
     atmosphere_color: bpy.props.FloatVectorProperty(name="Atmosphere Color", subtype='COLOR', default=(0.3,0.5,1.0), size=3)
     atmosphere_scale_offset: bpy.props.FloatProperty(name="Atmosphere Scale", default=1.025, min=1.0001)
 
+    # Texture Mapping Controls (Globe)
+    maintain_aspect_ratio: bpy.props.BoolProperty(
+        name="Maintain Texture Aspect Ratio",
+        default=True,
+        description="Adjust UV mapping to maintain original image aspect ratio (otherwise stretches to 2:1)",
+        update=_trigger_live_update,
+    )
+    polar_padding_top: bpy.props.FloatProperty(
+        name="Polar Padding Top",
+        subtype='PERCENTAGE', unit='NONE', precision=2,
+        default=0.0, min=0.0, max=0.49,
+        description="Push texture down from the north pole to reduce polar stretching",
+        update=_trigger_live_update,
+    )
+    polar_padding_bottom: bpy.props.FloatProperty(
+        name="Polar Padding Bottom",
+        subtype='PERCENTAGE', unit='NONE', precision=2,
+        default=0.0, min=0.0, max=0.49,
+        description="Push texture up from the south pole to reduce polar stretching",
+        update=_trigger_live_update,
+    )
+    texture_extension_mode: bpy.props.EnumProperty(
+        name="Texture Extension",
+        items=[
+            ('EXTEND', 'Extend', 'Clamp edge pixels beyond 0-1'),
+            ('REPEAT', 'Repeat', 'Tile the texture'),
+            ('CLIP', 'Clip', 'Outside area becomes transparent/background'),
+        ],
+        default='EXTEND',
+        description="How textures behave outside original UV bounds",
+        update=_trigger_live_update,
+    )
+
     # Clouds
     generate_clouds: bpy.props.BoolProperty(name="Clouds", default=True)
     cloud_scale_offset: bpy.props.FloatProperty(name="Cloud Scale", default=1.01, min=1.0001)

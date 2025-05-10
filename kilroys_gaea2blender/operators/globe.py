@@ -5,6 +5,7 @@ from ..utils import (
     assign_material,
     apply_displacement,
     _load_image_cached,
+    _setup_texture_mapping_nodes,
 )
 
 
@@ -179,10 +180,14 @@ class KILROY_OT_generate_globe(bpy.types.Operator):
             l.new(sss.outputs['BSSRDF'], mix.inputs[2])
             l.new(mix.outputs['Shader'], out.inputs['Surface'])
             if cloud_img:
+                uv_socket = _setup_texture_mapping_nodes(cloud_mat.node_tree, cloud_img, props)
+
                 tex = n.new('ShaderNodeTexImage')
                 tex.image = cloud_img
-                coord = n.new('ShaderNodeTexCoord')
-                l.new(coord.outputs['UV'], tex.inputs['Vector'])
+                tex.interpolation = 'Linear'
+                tex.extension = props.texture_extension_mode
+                l.new(uv_socket, tex.inputs['Vector'])
+
                 # Use COLOR output for factor regardless of alpha channel
                 l.new(tex.outputs['Color'], mix.inputs['Fac'])
 
