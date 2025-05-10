@@ -186,6 +186,82 @@ class TileGeneratorProperties(bpy.types.PropertyGroup):
         update=_trigger_live_update,
     )
 
+    # Atmosphere options
+    generate_atmosphere: bpy.props.BoolProperty(
+        name="Generate Atmosphere",
+        default=True,
+        description="Create a volumetric atmosphere layer around the globe",
+        update=_trigger_live_update,
+    )
+    atmosphere_density: bpy.props.FloatProperty(
+        name="Atmosphere Density",
+        default=0.25,
+        min=0.0,
+        soft_max=2.0,
+        description="Volume density for the atmosphere",
+        update=_trigger_live_update,
+    )
+    atmosphere_color: bpy.props.FloatVectorProperty(
+        name="Atmosphere Color",
+        subtype='COLOR',
+        default=(0.3, 0.5, 1.0),
+        min=0.0,
+        max=1.0,
+        size=3,
+        description="Atmosphere scatter colour",
+        update=_trigger_live_update,
+    )
+    atmosphere_scale_offset: bpy.props.FloatProperty(
+        name="Atmosphere Scale",
+        default=1.025,
+        min=1.0001,
+        soft_max=1.2,
+        description="Scale multiplier for atmosphere sphere",
+        update=_trigger_live_update,
+    )
+
+    # Cloud layer options
+    generate_clouds: bpy.props.BoolProperty(
+        name="Generate Clouds",
+        default=True,
+        description="Create a cloud layer around the globe",
+        update=_trigger_live_update,
+    )
+    cloud_scale_offset: bpy.props.FloatProperty(
+        name="Cloud Scale",
+        default=1.01,
+        min=1.0001,
+        soft_max=1.1,
+        description="Scale multiplier for cloud sphere",
+        update=_trigger_live_update,
+    )
+    cloud_displacement_strength: bpy.props.FloatProperty(
+        name="Cloud Displacement",
+        default=0.005,
+        min=0.0,
+        soft_max=0.05,
+        description="Displacement strength for cloud geometry",
+        update=_trigger_live_update,
+    )
+    cloud_sss_scale: bpy.props.FloatProperty(
+        name="Cloud SSS Scale",
+        default=0.7,
+        min=0.0,
+        soft_max=5.0,
+        description="Subsurface scattering scale for clouds",
+        update=_trigger_live_update,
+    )
+    cloud_sss_color: bpy.props.FloatVectorProperty(
+        name="Cloud SSS Color",
+        subtype='COLOR',
+        default=(1.0, 1.0, 1.0),
+        min=0.0,
+        max=1.0,
+        size=3,
+        description="SSS colour for clouds",
+        update=_trigger_live_update,
+    )
+
 
 def generate_texture_or_roughness_path(context, file_path, row, col):
     if not file_path:
@@ -567,6 +643,29 @@ class VIEW3D_PT_tile_generator(bpy.types.Panel):
             box_globe.prop(props, "globe_radius")
             box_globe.operator("object.generate_globe", text="Generate Globe", icon="WORLD_DATA")
 
+            # Atmosphere options UI
+            box_globe.separator()
+            row_atmo_toggle = box_globe.row()
+            row_atmo_toggle.prop(props, "generate_atmosphere", toggle=True)
+            if props.generate_atmosphere:
+                box_atmo = box_globe.box()
+                row_den = box_atmo.row(align=True)
+                row_den.prop(props, "atmosphere_density")
+                row_den.prop(props, "atmosphere_scale_offset")
+                box_atmo.prop(props, "atmosphere_color")
+
+            # Cloud options UI
+            row_cloud_toggle = box_globe.row()
+            row_cloud_toggle.prop(props, "generate_clouds", toggle=True)
+            if props.generate_clouds:
+                box_cloud = box_globe.box()
+                row_cl = box_cloud.row(align=True)
+                row_cl.prop(props, "cloud_scale_offset")
+                row_cl.prop(props, "cloud_displacement_strength")
+                row_sss = box_cloud.row(align=True)
+                row_sss.prop(props, "cloud_sss_color")
+                row_sss.prop(props, "cloud_sss_scale")
+
 
 def register():
     bpy.utils.register_class(TileGeneratorProperties)
@@ -760,8 +859,117 @@ class OBJECT_OT_generate_globe(bpy.types.Operator):
         disp.texture_coords = 'UV'
         disp.strength = props.displacement_strength
 
-        # Material
+        # Material for main globe
         assign_material(context, globe, 0, 0, props.texture_file, props.roughness_file, props.normal_file, props.invert_roughness_map)
+
+        # ---------------- Atmosphere ----------------
+        if props.generate_atmosphere:
+            bpy.ops.object.select_all(action='DESELECT')
+            globe.select_set(True)
+            context.view_layer.objects.active = globe
+            bpy.ops.object.duplicate(linked=False)
+            atmo = context.active_object
+            atmo.name = "GeneratedAtmosphere"
+            # remove modifiers
+            for m in list(atmo.modifiers):
+                atmo.modifiers.remove(m)
+            atmo.scale = (props.atmosphere_scale_offset,)*3
+            bpy.ops.object.transform_apply(scale=True)
+
+            mat_atmo = bpy.data.materials.new("AtmosphereMaterial")
+            mat_atmo.use_nodes = True
+            nodes = mat_atmo.node_tree.nodes
+            links = mat_atmo.node_tree.links
+            for n in nodes:
+                nodes.remove(n)
+            output = nodes.new('ShaderNodeOutputMaterial')
+            scatter = nodes.new('ShaderNodeVolumeScatter')
+            scatter.inputs['Color'].default_value = (*props.atmosphere_color,1)
+            scatter.inputs['Density'].default_value = props.atmosphere_density
+            links.new(scatter.outputs['Volume'], output.inputs['Volume'])
+            if atmo.data.materials:
+                atmo.data.materials[0] = mat_atmo
+            else:
+                atmo.data.materials.append(mat_atmo)
+            # collection link
+            if atmo.name not in globe_coll.objects:
+                globe_coll.objects.link(atmo)
+            if atmo.name in context.scene.collection.objects:
+                context.scene.collection.objects.unlink(atmo)
+
+        # ---------------- Clouds ----------------
+        if props.generate_clouds:
+            bpy.ops.object.select_all(action='DESELECT')
+            globe.select_set(True)
+            context.view_layer.objects.active = globe
+            bpy.ops.object.duplicate(linked=False)
+            clouds = context.active_object
+            clouds.name = "GeneratedClouds"
+            for m in list(clouds.modifiers):
+                clouds.modifiers.remove(m)
+            clouds.scale = (props.cloud_scale_offset,)*3
+            bpy.ops.object.transform_apply(scale=True)
+
+            # load cloud image
+            cloud_img = None
+            potential_paths = []
+            addon_dir = os.path.dirname(os.path.realpath(__file__))
+            CLOUD_TEXTURE_FILENAME = "earth_clouds.png"
+            potential_paths.append(os.path.join(addon_dir, 'assets', CLOUD_TEXTURE_FILENAME))
+            potential_paths.append(os.path.join(addon_dir, CLOUD_TEXTURE_FILENAME))
+            if bpy.data.filepath:
+                potential_paths.append(os.path.join(os.path.dirname(bpy.data.filepath), CLOUD_TEXTURE_FILENAME))
+            for p in potential_paths:
+                if os.path.exists(p):
+                    cloud_img = bpy.data.images.get(os.path.basename(p)) or bpy.data.images.load(p, check_existing=True)
+                    break
+
+            # create cloud material
+            cloud_mat = bpy.data.materials.new("CloudMaterial")
+            cloud_mat.use_nodes = True
+            cloud_mat.blend_method = 'BLEND'
+            nodes = cloud_mat.node_tree.nodes
+            links = cloud_mat.node_tree.links
+            for n in nodes:
+                nodes.remove(n)
+            out = nodes.new('ShaderNodeOutputMaterial')
+            mix = nodes.new('ShaderNodeMixShader')
+            trans = nodes.new('ShaderNodeBsdfTransparent')
+            sss = nodes.new('ShaderNodeSubsurfaceScattering')
+            sss.inputs['Color'].default_value = (*props.cloud_sss_color,1)
+            sss.inputs['Scale'].default_value = props.cloud_sss_scale
+            links.new(sss.outputs['BSSRDF'], mix.inputs[1])
+            links.new(trans.outputs['BSDF'], mix.inputs[2])
+            links.new(mix.outputs['Shader'], out.inputs['Surface'])
+            if cloud_img:
+                tex = nodes.new('ShaderNodeTexImage')
+                tex.image = cloud_img
+                coord = nodes.new('ShaderNodeTexCoord')
+                links.new(coord.outputs['UV'], tex.inputs['Vector'])
+                # Use Alpha channel for mask if available
+                if 'Alpha' in tex.outputs.keys():
+                    links.new(tex.outputs['Alpha'], mix.inputs['Fac'])
+                else:
+                    links.new(tex.outputs['Color'], mix.inputs['Fac'])
+            else:
+                mix.inputs['Fac'].default_value = 0.0
+            if clouds.data.materials:
+                clouds.data.materials[0] = cloud_mat
+            else:
+                clouds.data.materials.append(cloud_mat)
+
+            if cloud_img and props.cloud_displacement_strength>0.0:
+                disp = clouds.modifiers.new('CloudDisplace','DISPLACE')
+                texd = bpy.data.textures.new('CloudDispTex','IMAGE')
+                texd.image = cloud_img
+                disp.texture = texd
+                disp.texture_coords='UV'
+                disp.strength = props.cloud_displacement_strength
+
+            if clouds.name not in globe_coll.objects:
+                globe_coll.objects.link(clouds)
+            if clouds.name in context.scene.collection.objects:
+                context.scene.collection.objects.unlink(clouds)
 
         self.report({'INFO'}, "Globe generated")
         return {'FINISHED'}
