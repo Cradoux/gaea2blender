@@ -304,18 +304,12 @@ class OBJECT_OT_generate_render_tiles(bpy.types.Operator):
             if not heightmap_path:
                 return {'CANCELLED'}
 
-        # Only load if path changed or not already loaded
-        heightmap_img = None
-        if displace := plane.modifiers.get("Displace"):
-            current_img = displace.texture.image if displace.texture else None
-            if current_img and current_img.filepath == heightmap_path:
-                heightmap_img = current_img
-        if heightmap_img is None:
-            try:
-                heightmap_img = bpy.data.images.get(heightmap_path) or bpy.data.images.load(heightmap_path)
-            except Exception:
-                self.report({'ERROR'}, f"Failed to load heightmap {heightmap_path}")
-                return {'CANCELLED'}
+        # Ensure image is loaded/cached
+        try:
+            heightmap_img = bpy.data.images.get(heightmap_path) or bpy.data.images.load(heightmap_path)
+        except Exception:
+            self.report({'ERROR'}, f"Failed to load heightmap {heightmap_path}")
+            return {'CANCELLED'}
 
         plane = prepare_plane(subdivisions, tile_thickness=0)
 
@@ -324,8 +318,11 @@ class OBJECT_OT_generate_render_tiles(bpy.types.Operator):
         tiles_coll = ensure_tile_collection(context)
         tiles_coll.objects.link(plane)
         # Unlink from the master collection if the plane is still linked there
-        if plane in context.scene.collection.objects:
-            context.scene.collection.objects.unlink(plane)
+        try:
+            if plane in context.scene.collection.objects:
+                context.scene.collection.objects.unlink(plane)
+        except RuntimeError:
+            pass  # Plane may already be unlinked
 
         # Apply displacement without applying the modifiers (keep for render workflow)
         apply_displacement(plane, heightmap_img, props.displacement_strength, props.subdivision_levels, apply_modifiers=False)
