@@ -71,6 +71,11 @@ class TileGeneratorProperties(bpy.types.PropertyGroup):
         subtype='FILE_PATH',
         description="Pick the first file in the set of roughness tiles to match the heightmap tiles."
     )
+    normal_file: bpy.props.StringProperty(
+        name="Normal Map File",
+        subtype='FILE_PATH',
+        description="Pick the first file in the set of normal map tiles to match the heightmap tiles."
+    )
     invert_roughness_map: bpy.props.BoolProperty(
         name="Invert Roughness Map",
         default=False,
@@ -120,7 +125,7 @@ def prepare_plane(subdivisions, tile_thickness):
     return plane
 
 
-def assign_material(context, plane, row, col, texture_path, roughness_path, invert_roughness_map):
+def assign_material(context, plane, row, col, texture_path, roughness_path, normal_path, invert_roughness_map):
     material = bpy.data.materials.new(name=f"Material_{row}_{col}")
     material.use_nodes = True
     bsdf = material.node_tree.nodes.get("Principled BSDF")
@@ -149,6 +154,23 @@ def assign_material(context, plane, row, col, texture_path, roughness_path, inve
                 material.node_tree.links.new(bsdf.inputs['Roughness'], invert_node.outputs['Color'])
             else:
                 material.node_tree.links.new(bsdf.inputs['Roughness'], roughness_image_node.outputs['Color'])
+        except RuntimeError:
+            pass
+
+    # Normal map handling
+    if normal_path:
+        try:
+            normal_img = bpy.data.images.load(normal_path)
+            normal_image_node = material.node_tree.nodes.new('ShaderNodeTexImage')
+            normal_image_node.image = normal_img
+            # Set color space for normal map to Non-Color to avoid sRGB interpretation
+            if hasattr(normal_image_node.image, "colorspace_settings"):
+                normal_image_node.image.colorspace_settings.name = 'Non-Color'
+
+            normal_map_node = material.node_tree.nodes.new('ShaderNodeNormalMap')
+            # Link texture color output to Normal Map node, then to BSDF
+            material.node_tree.links.new(normal_map_node.inputs['Color'], normal_image_node.outputs['Color'])
+            material.node_tree.links.new(bsdf.inputs['Normal'], normal_map_node.outputs['Normal'])
         except RuntimeError:
             pass
 
@@ -187,8 +209,9 @@ def generate_texture_paths(context, row, col):
     heightmap_path = generate_heightmap_path(context, row, col)
     texture_path = generate_texture_or_roughness_path(context, props.texture_file, row, col)
     roughness_path = generate_texture_or_roughness_path(context, props.roughness_file, row, col)
+    normal_path = generate_texture_or_roughness_path(context, props.normal_file, row, col)
 
-    return heightmap_path, texture_path, roughness_path
+    return heightmap_path, texture_path, roughness_path, normal_path
 
 
 def apply_displacement(plane, heightmap_img, displacement_strength, subdivision_levels, apply_modifiers=False):
@@ -238,8 +261,9 @@ class OBJECT_OT_generate_render_tiles(bpy.types.Operator):
             heightmap_path = props.start_tile_file
             texture_path = props.texture_file
             roughness_path = props.roughness_file
+            normal_path = props.normal_file
         else:
-            heightmap_path, texture_path, roughness_path = generate_texture_paths(context, row, col)
+            heightmap_path, texture_path, roughness_path, normal_path = generate_texture_paths(context, row, col)
             if not heightmap_path:
                 return {'CANCELLED'}
 
@@ -254,7 +278,7 @@ class OBJECT_OT_generate_render_tiles(bpy.types.Operator):
         apply_displacement(plane, heightmap_img, props.displacement_strength, props.subdivision_levels, apply_modifiers=False)
 
         # Assign textures and materials if they exist
-        assign_material(context, plane, row, col, texture_path, roughness_path, props.invert_roughness_map)
+        assign_material(context, plane, row, col, texture_path, roughness_path, normal_path, props.invert_roughness_map)
 
         # Translate the tiles to the correct location for rendering
         plane.location.x = col * 10
@@ -372,6 +396,7 @@ class VIEW3D_PT_tile_generator(bpy.types.Panel):
         box_render = layout.box()
         box_render.prop(props, "texture_file")
         box_render.prop(props, "roughness_file")
+        box_render.prop(props, "normal_file")
         box_render.prop(props, "invert_roughness_map")
         box_render.operator("object.generate_render_tiles", text="Generate Render Tiles")
 
