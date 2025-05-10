@@ -31,14 +31,27 @@ def _gather_classes():
 def register():
     classes = _gather_classes()
     for cls in classes:
-        bpy.utils.register_class(cls)
+        try:
+            bpy.utils.register_class(cls)
+        except ValueError:
+            # If the class is already registered from a previous enable in this session,
+            # unregister it first and then register again so the latest code is used.
+            try:
+                bpy.utils.unregister_class(cls)
+            except Exception:
+                pass
+            bpy.utils.register_class(cls)
     bpy.types.Scene.kilroy_props = bpy.props.PointerProperty(type=properties.KilroyProperties)
 
 
 def unregister():
     classes = _gather_classes()
     for cls in reversed(classes):
-        bpy.utils.unregister_class(cls)
+        try:
+            bpy.utils.unregister_class(cls)
+        except Exception:
+            # It may already be unregistered or never registered; ignore.
+            pass
     del bpy.types.Scene.kilroy_props
 
 
