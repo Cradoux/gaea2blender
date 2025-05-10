@@ -30,6 +30,34 @@ def _trigger_live_update(self, context):
             pass
 
 
+# Lightweight update paths for performance-critical numeric tweaks
+
+
+def _update_displacement_strength(self, context):
+    if not self.auto_update:
+        return
+    coll = get_tile_collection()
+    if coll is None:
+        return
+    for plane in coll.objects:
+        displace = plane.modifiers.get("Displace")
+        if displace:
+            displace.strength = self.displacement_strength
+
+
+def _update_subdivision_levels(self, context):
+    if not self.auto_update:
+        return
+    coll = get_tile_collection()
+    if coll is None:
+        return
+    for plane in coll.objects:
+        subsurf = plane.modifiers.get("Subsurf")
+        if subsurf:
+            subsurf.levels = self.subdivision_levels
+            subsurf.render_levels = self.subdivision_levels
+
+
 class TileGeneratorProperties(bpy.types.PropertyGroup):
     # Common Options
     num_rows: bpy.props.IntProperty(
@@ -48,14 +76,14 @@ class TileGeneratorProperties(bpy.types.PropertyGroup):
         name="Displacement Strength",
         default=1.0,
         description="Strength of the displacement applied to the plane based on the heightmap.",
-        update=_trigger_live_update
+        update=_update_displacement_strength
     )
     subdivision_levels: bpy.props.IntProperty(
         name="Subdivision Levels",
         default=3,
         min=0,
         description="Number of subdivision levels for the plane's geometry.",
-        update=_trigger_live_update
+        update=_update_subdivision_levels
     )
     start_tile_file: bpy.props.StringProperty(
         name="Heightmap File",
