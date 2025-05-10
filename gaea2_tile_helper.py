@@ -22,12 +22,18 @@ import re
 
 
 def _trigger_live_update(self, context):
-    if context.scene.tile_generator_props.auto_update:
-        # Use a safely wrapped operator call; ignore failure if operator not found
-        try:
+    props = context.scene.tile_generator_props
+    if not props.auto_update:
+        return
+    try:
+        if props.render_mode == 'LANDSCAPE':
             bpy.ops.object.tile_generator_refresh(all_tiles=True)
-        except RuntimeError:
-            pass
+        elif props.render_mode == 'GLOBE':
+            globe_coll = bpy.data.collections.get(GLOBE_COLLECTION_NAME)
+            if globe_coll and globe_coll.objects:
+                bpy.ops.object.generate_globe()
+    except RuntimeError:
+        pass
 
 
 # Lightweight update paths for performance-critical numeric tweaks
@@ -139,6 +145,45 @@ class TileGeneratorProperties(bpy.types.PropertyGroup):
         default=False,
         description="Enable if your Gaea export is split into multiple Y/X tiles."
         # No heavy auto-refresh on toggle to keep UI responsive.
+    )
+
+    # Workflow selection
+    render_mode: bpy.props.EnumProperty(
+        name="Render Mode",
+        description="Choose 'Landscape' to build tiled planes or STL tiles. Choose 'Globe' to map your height/texture to a sphere for planetary renders.",
+        items=[
+            ('LANDSCAPE', "Landscape", "Planes / tiles from Gaea exports", 'WORLD', 0),
+            ('GLOBE', "Globe", "Sphere for planetary renders from Gaea exports", 'MESH_UVSPHERE', 1),
+        ],
+        default='LANDSCAPE',
+        update=_trigger_live_update,
+    )
+
+    # Globe-specific options
+    sphere_resolution_segments: bpy.props.IntProperty(
+        name="Sphere Segments",
+        default=128,
+        min=3,
+        max=1024,
+        description="Number of vertical segments for the globe sphere.",
+        update=_trigger_live_update,
+    )
+    sphere_resolution_rings: bpy.props.IntProperty(
+        name="Sphere Rings",
+        default=64,
+        min=3,
+        max=512,
+        description="Number of horizontal rings for the globe sphere.",
+        update=_trigger_live_update,
+    )
+    globe_radius: bpy.props.FloatProperty(
+        name="Globe Radius",
+        default=5.0,
+        min=0.01,
+        soft_max=100.0,
+        unit='LENGTH',
+        description="Radius of the generated globe (Blender units).",
+        update=_trigger_live_update,
     )
 
 
@@ -468,35 +513,59 @@ class VIEW3D_PT_tile_generator(bpy.types.Panel):
         scene = context.scene
         props = scene.tile_generator_props
 
-        layout.label(text="Common Options")
-        # Tiling sub-box
-        box_tile = layout.box()
-        box_tile.label(text="Tiling")
-        box_tile.prop(props, "use_tiles")
-        if props.use_tiles:
-            box_tile.prop(props, "num_rows")
-            box_tile.prop(props, "num_cols")
-        layout.prop(props, "displacement_strength")
-        layout.prop(props, "subdivision_levels")
-        layout.prop(props, "start_tile_file")
+        # Render Mode selector
+        layout.prop(props, "render_mode", expand=True)
+        layout.separator()
+
+        # Image inputs (shared)
+        box_images = layout.box()
+        box_images.label(text="Image Inputs (equirectangular for Globe)")
+        box_images.prop(props, "start_tile_file", text="Heightmap File")
+        box_images.prop(props, "texture_file")
+        box_images.prop(props, "roughness_file")
+        box_images.prop(props, "normal_file")
+
+        # Common material/geometry controls
+        box_common = layout.box()
+        box_common.label(text="Material & Geometry")
+        box_common.prop(props, "displacement_strength")
+        box_common.prop(props, "subdivision_levels", text="Subdivision Levels")
+        box_common.prop(props, "invert_roughness_map")
+        box_common.prop(props, "auto_update")
 
         layout.separator()
-        layout.label(text="STL Workflow", icon="MODIFIER")
-        box_stl = layout.box()
-        box_stl.prop(props, "tile_thickness")
-        box_stl.prop(props, "output_dir")
-        box_stl.operator("object.generate_stl_tiles", text="Generate STL Tiles")
 
-        layout.separator()
-        layout.label(text="Render Workflow", icon="RENDER_STILL")
-        box_render = layout.box()
-        box_render.prop(props, "texture_file")
-        box_render.prop(props, "roughness_file")
-        box_render.prop(props, "normal_file")
-        box_render.prop(props, "invert_roughness_map")
-        box_render.prop(props, "auto_update")
-        box_render.operator("object.generate_render_tiles", text="Generate Render Tiles")
-        box_render.operator("object.tile_generator_refresh", text="Refresh Tiles")
+        if props.render_mode == 'LANDSCAPE':
+            # Tiling options
+            box_tile = layout.box()
+            box_tile.label(text="Tiling Options")
+            box_tile.prop(props, "use_tiles")
+            if props.use_tiles:
+                row = box_tile.row(align=True)
+                row.prop(props, "num_rows")
+                row.prop(props, "num_cols")
+
+            # STL workflow
+            box_stl = layout.box()
+            box_stl.label(text="STL Workflow", icon="MODIFIER")
+            box_stl.prop(props, "tile_thickness")
+            box_stl.prop(props, "output_dir")
+            box_stl.operator("object.generate_stl_tiles", text="Generate STL Tiles", icon="EXPORT")
+
+            # Render tiles
+            box_render = layout.box()
+            box_render.label(text="Render Tiles", icon="RENDER_STILL")
+            box_render.operator("object.generate_render_tiles", text="Generate Render Tiles", icon="ADD")
+            box_render.operator("object.tile_generator_refresh", text="Refresh Tiles", icon="FILE_REFRESH")
+
+        elif props.render_mode == 'GLOBE':
+            box_globe = layout.box()
+            box_globe.label(text="Globe Options", icon="MESH_UVSPHERE")
+            row = box_globe.row(align=True)
+            row.prop(props, "sphere_resolution_segments")
+            row.prop(props, "sphere_resolution_rings")
+            box_globe.prop(props, "globe_radius")
+            box_globe.operator("object.generate_globe", text="Generate Globe", icon="WORLD_DATA")
 
 
 def register():
@@ -505,6 +574,7 @@ def register():
     bpy.utils.register_class(OBJECT_OT_generate_render_tiles)
     bpy.utils.register_class(OBJECT_OT_tile_generator_refresh)
     bpy.utils.register_class(VIEW3D_PT_tile_generator)
+    bpy.utils.register_class(OBJECT_OT_generate_globe)
     bpy.types.Scene.tile_generator_props = bpy.props.PointerProperty(type=TileGeneratorProperties)
 
 
@@ -514,6 +584,7 @@ def unregister():
     bpy.utils.unregister_class(OBJECT_OT_generate_render_tiles)
     bpy.utils.unregister_class(OBJECT_OT_tile_generator_refresh)
     bpy.utils.unregister_class(VIEW3D_PT_tile_generator)
+    bpy.utils.unregister_class(OBJECT_OT_generate_globe)
     del bpy.types.Scene.tile_generator_props
 
 
@@ -616,4 +687,81 @@ class OBJECT_OT_tile_generator_refresh(bpy.types.Operator):
 
         wm.progress_end()
         self.report({'INFO'}, "Tiles updated")
+        return {'FINISHED'}
+
+
+# ---------------- Globe helpers ----------------
+
+GLOBE_COLLECTION_NAME = "GaeaGlobe"
+
+
+def get_or_create_collection(context, name):
+    coll = bpy.data.collections.get(name)
+    if coll is None:
+        coll = bpy.data.collections.new(name)
+        context.scene.collection.children.link(coll)
+    return coll
+
+
+def clear_collection(coll):
+    if coll:
+        for obj in list(coll.objects):
+            bpy.data.objects.remove(obj, do_unlink=True)
+
+
+class OBJECT_OT_generate_globe(bpy.types.Operator):
+    bl_idname = "object.generate_globe"
+    bl_label = "Generate Globe"
+    bl_description = "Generate or refresh a globe sphere using current images"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        props = context.scene.tile_generator_props
+
+        if not props.start_tile_file:
+            self.report({'WARNING'}, "Please select a heightmap image first.")
+            return {'CANCELLED'}
+
+        globe_coll = get_or_create_collection(context, GLOBE_COLLECTION_NAME)
+        clear_collection(globe_coll)
+
+        bpy.ops.mesh.primitive_uv_sphere_add(segments=props.sphere_resolution_segments,
+                                             ring_count=props.sphere_resolution_rings,
+                                             radius=props.globe_radius,
+                                             align='WORLD', location=(0, 0, 0))
+        globe = context.active_object
+        globe.name = "GeneratedGlobe"
+        bpy.ops.object.shade_smooth()
+
+        # Move to collection exclusively
+        for coll in globe.users_collection:
+            if coll != globe_coll:
+                coll.objects.unlink(globe)
+        if globe.name not in globe_coll.objects:
+            globe_coll.objects.link(globe)
+        if globe in context.scene.collection.objects:
+            context.scene.collection.objects.unlink(globe)
+
+        # Load heightmap image
+        img = bpy.data.images.get(props.start_tile_file) or bpy.data.images.load(props.start_tile_file, check_existing=True)
+        if hasattr(img, "colorspace_settings"):
+            img.colorspace_settings.name = 'Non-Color'
+
+        # Modifiers
+        if props.subdivision_levels > 0:
+            sub = globe.modifiers.new("GlobeSubsurf", 'SUBSURF')
+            sub.levels = props.subdivision_levels
+            sub.render_levels = props.subdivision_levels
+
+        disp = globe.modifiers.new("GlobeDisplace", 'DISPLACE')
+        tex = bpy.data.textures.get("GlobeHeightmapTexture") or bpy.data.textures.new("GlobeHeightmapTexture", 'IMAGE')
+        tex.image = img
+        disp.texture = tex
+        disp.texture_coords = 'UV'
+        disp.strength = props.displacement_strength
+
+        # Material
+        assign_material(context, globe, 0, 0, props.texture_file, props.roughness_file, props.normal_file, props.invert_roughness_map)
+
+        self.report({'INFO'}, "Globe generated")
         return {'FINISHED'}
