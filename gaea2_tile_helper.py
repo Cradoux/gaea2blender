@@ -739,7 +739,7 @@ class OBJECT_OT_generate_globe(bpy.types.Operator):
                 coll.objects.unlink(globe)
         if globe.name not in globe_coll.objects:
             globe_coll.objects.link(globe)
-        if globe in context.scene.collection.objects:
+        if globe.name in context.scene.collection.objects:
             context.scene.collection.objects.unlink(globe)
 
         # Load heightmap image
