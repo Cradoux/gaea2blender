@@ -134,6 +134,12 @@ class TileGeneratorProperties(bpy.types.PropertyGroup):
         description="Invert the roughness map for each tile.",
         update=_trigger_live_update
     )
+    use_tiles: bpy.props.BoolProperty(
+        name="Use Tiled Input",
+        default=False,
+        description="Enable if your Gaea export is split into multiple Y/X tiles."
+        # No heavy auto-refresh on toggle to keep UI responsive.
+    )
 
 
 def generate_texture_or_roughness_path(context, file_path, row, col):
@@ -302,7 +308,9 @@ class OBJECT_OT_generate_render_tiles(bpy.types.Operator):
 
     def execute(self, context):
         props = context.scene.tile_generator_props
-        single_heightmap = props.num_rows == 1 and props.num_cols == 1
+        rows = props.num_rows if props.use_tiles else 1
+        cols = props.num_cols if props.use_tiles else 1
+        single_heightmap = not props.use_tiles or (rows == 1 and cols == 1)
 
         # Ensure we have a clean collection
         tiles_coll = ensure_tile_collection(context)
@@ -310,8 +318,8 @@ class OBJECT_OT_generate_render_tiles(bpy.types.Operator):
         for obj in list(tiles_coll.objects):
             bpy.data.objects.remove(obj, do_unlink=True)
 
-        for row in range(props.num_rows):
-            for col in range(props.num_cols):
+        for row in range(rows):
+            for col in range(cols):
                 result = self.generate_tile_for_render(context, row=row, col=col, single_heightmap=single_heightmap)
                 if result == {'CANCELLED'}:
                     return result
@@ -320,7 +328,9 @@ class OBJECT_OT_generate_render_tiles(bpy.types.Operator):
 
     def generate_tile_for_render(self, context, row=0, col=0, single_heightmap=False):
         props = context.scene.tile_generator_props
-        subdivisions = 100  # Fixed subdivisions
+        rows = props.num_rows if props.use_tiles else 1
+        cols = props.num_cols if props.use_tiles else 1
+        single_heightmap = not props.use_tiles or (rows == 1 and cols == 1)
 
         if single_heightmap:
             heightmap_path = props.start_tile_file
@@ -339,7 +349,7 @@ class OBJECT_OT_generate_render_tiles(bpy.types.Operator):
             self.report({'ERROR'}, f"Failed to load heightmap {heightmap_path}")
             return {'CANCELLED'}
 
-        plane = prepare_plane(subdivisions, tile_thickness=0)
+        plane = prepare_plane(100, tile_thickness=0)
 
         # Tag plane row/col and move to tiles collection
         plane["tile_rc"] = (row, col)
@@ -375,10 +385,12 @@ class OBJECT_OT_generate_stl_tiles(bpy.types.Operator):
 
     def execute(self, context):
         props = context.scene.tile_generator_props
-        single_heightmap = props.num_rows == 1 and props.num_cols == 1
+        rows = props.num_rows if props.use_tiles else 1
+        cols = props.num_cols if props.use_tiles else 1
+        single_heightmap = not props.use_tiles or (rows == 1 and cols == 1)
 
-        for row in range(props.num_rows):
-            for col in range(props.num_cols):
+        for row in range(rows):
+            for col in range(cols):
                 result = self.generate_tile_for_stl(context, row=row, col=col, single_heightmap=single_heightmap)
                 if result == {'CANCELLED'}:
                     return result
@@ -387,7 +399,9 @@ class OBJECT_OT_generate_stl_tiles(bpy.types.Operator):
 
     def generate_tile_for_stl(self, context, row=0, col=0, single_heightmap=False):
         props = context.scene.tile_generator_props
-        subdivisions = 100  # Fixed subdivisions
+        rows = props.num_rows if props.use_tiles else 1
+        cols = props.num_cols if props.use_tiles else 1
+        single_heightmap = not props.use_tiles or (rows == 1 and cols == 1)
 
         if single_heightmap:
             heightmap_path = props.start_tile_file
@@ -401,7 +415,7 @@ class OBJECT_OT_generate_stl_tiles(bpy.types.Operator):
         except RuntimeError:
             return {'CANCELLED'}
 
-        plane = prepare_plane(subdivisions, tile_thickness=props.tile_thickness)
+        plane = prepare_plane(100, tile_thickness=props.tile_thickness)
 
         # Apply displacement and modifiers in STL workflow (apply modifiers here)
         apply_displacement(plane, heightmap_img, props.displacement_strength, props.subdivision_levels, apply_modifiers=True)
@@ -455,8 +469,13 @@ class VIEW3D_PT_tile_generator(bpy.types.Panel):
         props = scene.tile_generator_props
 
         layout.label(text="Common Options")
-        layout.prop(props, "num_rows")
-        layout.prop(props, "num_cols")
+        # Tiling sub-box
+        box_tile = layout.box()
+        box_tile.label(text="Tiling")
+        box_tile.prop(props, "use_tiles")
+        if props.use_tiles:
+            box_tile.prop(props, "num_rows")
+            box_tile.prop(props, "num_cols")
         layout.prop(props, "displacement_strength")
         layout.prop(props, "subdivision_levels")
         layout.prop(props, "start_tile_file")
@@ -555,7 +574,9 @@ class OBJECT_OT_tile_generator_refresh(bpy.types.Operator):
             row, col = plane["tile_rc"]
 
             # Retrieve paths again
-            single_heightmap = props.num_rows == 1 and props.num_cols == 1
+            rows = props.num_rows if props.use_tiles else 1
+            cols = props.num_cols if props.use_tiles else 1
+            single_heightmap = not props.use_tiles or (rows == 1 and cols == 1)
             if single_heightmap:
                 heightmap_path = props.start_tile_file
                 texture_path = props.texture_file
