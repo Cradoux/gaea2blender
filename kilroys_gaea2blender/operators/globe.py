@@ -59,15 +59,6 @@ class KILROY_OT_generate_globe(bpy.types.Operator):
             sub = globe.modifiers.new("GlobeSubsurf", 'SUBSURF')
             sub.levels = props.subdivision_levels
             sub.render_levels = props.subdivision_levels
-        if heightmap_img:
-            apply_displacement(
-                globe,
-                heightmap_img,
-                props.displacement_strength,
-                props.subdivision_levels,
-                apply_modifiers=False,
-                modifier_prefix="Globe",
-            )
 
         # Material
         assign_material(
@@ -80,6 +71,37 @@ class KILROY_OT_generate_globe(bpy.types.Operator):
             props.normal_file,
             props.invert_roughness_map,
         )
+
+        # ----- Shader displacement for globe surface -----
+        if heightmap_img and globe.data.materials:
+            mat = globe.data.materials[0]
+            nt = mat.node_tree
+            nodes = nt.nodes
+            links = nt.links
+
+            # Reuse or create displacement node setup once
+            disp_node = next((n for n in nodes if n.type == 'DISPLACEMENT'), None)
+            tex_height = next((n for n in nodes if isinstance(n, bpy.types.ShaderNodeTexImage) and n.image == heightmap_img), None)
+
+            if tex_height is None:
+                uv_socket = _setup_texture_mapping_nodes(nt, heightmap_img, props)
+                tex_height = nodes.new('ShaderNodeTexImage')
+                tex_height.image = heightmap_img
+                if hasattr(heightmap_img, 'colorspace_settings'):
+                    heightmap_img.colorspace_settings.name = 'Non-Color'
+                tex_height.interpolation = 'Linear'
+                tex_height.extension = props.texture_extension_mode
+                links.new(uv_socket, tex_height.inputs['Vector'])
+
+            if disp_node is None:
+                disp_node = nodes.new('ShaderNodeDisplacement')
+                # find output material node
+                out_node = next((n for n in nodes if n.type == 'OUTPUT_MATERIAL'), None)
+                if out_node:
+                    links.new(disp_node.outputs['Displacement'], out_node.inputs['Displacement'])
+
+            disp_node.inputs['Scale'].default_value = props.displacement_strength
+            links.new(tex_height.outputs['Color'], disp_node.inputs['Height'])
 
         # ---------------- Atmosphere ----------------
         if props.generate_atmosphere:
@@ -180,7 +202,7 @@ class KILROY_OT_generate_globe(bpy.types.Operator):
             l.new(sss.outputs['BSSRDF'], mix.inputs[2])
             l.new(mix.outputs['Shader'], out.inputs['Surface'])
             if cloud_img:
-                uv_socket = _setup_texture_mapping_nodes(cloud_mat.node_tree, cloud_img, props)
+                uv_socket = _setup_texture_mapping_nodes(cloud_mat.node_tree, None, props)
 
                 tex = n.new('ShaderNodeTexImage')
                 tex.image = cloud_img

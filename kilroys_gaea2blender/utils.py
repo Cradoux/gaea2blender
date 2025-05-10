@@ -254,16 +254,22 @@ def _setup_texture_mapping_nodes(node_tree, reference_image, props):
     loc_y = -props.polar_padding_bottom * scale_y
 
     # Horizontal scaling to maintain aspect ratio if requested
-    scale_x = 1.0
-    loc_x = 0.0
-    if props.maintain_aspect_ratio and reference_image and hasattr(reference_image, 'size') and reference_image.size[1] > 0:
-        img_aspect = reference_image.size[0] / reference_image.size[1]
-        target_aspect = 2.0  # equirectangular sphere UV aspect
-        scale_x = target_aspect / img_aspect
-        loc_x = (1.0 - scale_x) / 2.0
+    img_w = float(reference_image.size[0])
+    img_h = float(reference_image.size[1])
 
-    mapping.inputs['Scale'].default_value = (scale_x, scale_y, 1.0)
-    mapping.inputs['Location'].default_value = (loc_x, loc_y, 0.0)
+    img_aspect = img_w / img_h if img_h != 0 else 1.0
+
+    if img_aspect > 0.001:
+        sphere_uv_target_aspect = 2.0
+
+        # Correct formula: scale sphere U so that texture covers correct fraction
+        # For square image (aspect 1), we need 0.5 scale (texture occupies centre 50%)
+        map_scale_x = img_aspect / sphere_uv_target_aspect
+
+        map_location_x = (1.0 - map_scale_x) / 2.0
+
+    mapping.inputs['Scale'].default_value = (map_scale_x, scale_y, 1.0)
+    mapping.inputs['Location'].default_value = (map_location_x, loc_y, 0.0)
 
     links.new(tex_coord.outputs['UV'], mapping.inputs['Vector'])
 
